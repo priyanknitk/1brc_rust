@@ -1,7 +1,7 @@
+use fxhash::FxHashMap;
 use memchr::memchr;
 use memmap2::MmapOptions;
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
@@ -47,7 +47,7 @@ fn main() {
 
     let chunk_count: u64 = 16;
 
-    let mut weather_data: HashMap<&[u8], WeatherDetails> = HashMap::new();
+    let weather_data: FxHashMap<&[u8], WeatherDetails>;
 
     let chunk_regions = chunk_sizes(&file_path, chunk_count).unwrap();
 
@@ -57,18 +57,28 @@ fn main() {
             .unwrap()
     };
 
-    let map_res: Vec<_> = chunk_regions
+    weather_data = chunk_regions
         .into_par_iter()
         .map(|(start, end)| {
             process_batch_mmap(
                 &mmap[usize::try_from(start).unwrap()..usize::try_from(end).unwrap()],
             )
-        }).collect();
+        })
+        .fold(
+            || FxHashMap::with_hasher(Default::default()),
+            |mut acc, map| {
+                acc.extend(map);
+                acc
+            },
+        )
+        .reduce(
+            || FxHashMap::with_hasher(Default::default()),
+            |mut acc, map| {
+                acc.extend(map);
+                acc
+            },
+        );
 
-    for map in map_res.into_iter() {
-        weather_data.extend(map);
-    }
-    
     // sort weather data by city name
     let mut weather_data: Vec<_> = weather_data.into_iter().collect();
     weather_data.sort_by(|a, b| a.0.cmp(b.0));
@@ -87,9 +97,10 @@ fn main() {
     println!("Time elapsed: {:?}", start_time.elapsed());
 }
 
-fn process_batch_mmap(mmap: &[u8]) -> HashMap<&[u8], WeatherDetails> {
+fn process_batch_mmap(mmap: &[u8]) -> FxHashMap<&[u8], WeatherDetails> {
+    let mut local_weather_data: FxHashMap<&[u8], WeatherDetails> =
+        FxHashMap::with_hasher(Default::default());
     // Read chunks of the file
-    let mut local_weather_data: HashMap<&[u8], WeatherDetails> = HashMap::new();
     let line_boundaries = memchr::Memchr::new(b'\n', mmap);
     let mut start = 0;
     for line_boundary in line_boundaries.into_iter() {
@@ -97,7 +108,9 @@ fn process_batch_mmap(mmap: &[u8]) -> HashMap<&[u8], WeatherDetails> {
         start = line_boundary + 1;
         let position;
         match memchr(b';', line) {
-            Some(pos) => { position = pos; },
+            Some(pos) => {
+                position = pos;
+            }
             None => continue,
         }
         let city_name = &line[..position];
@@ -107,8 +120,10 @@ fn process_batch_mmap(mmap: &[u8]) -> HashMap<&[u8], WeatherDetails> {
         local_weather_data
             .entry(city_name)
             .and_modify(|weather_details| {
-                weather_details.min_temperature = std::cmp::min(weather_details.min_temperature, temperature);
-                weather_details.max_temperature = std::cmp::max(weather_details.max_temperature, temperature);
+                weather_details.min_temperature =
+                    std::cmp::min(weather_details.min_temperature, temperature);
+                weather_details.max_temperature =
+                    std::cmp::max(weather_details.max_temperature, temperature);
                 weather_details.count += 1;
                 weather_details.sum += temperature;
             })
@@ -138,6 +153,5 @@ fn parse_temp(temp_str: &[u8]) -> i32 {
             index = index * 10;
         }
     }
-    temperature = sign * temperature;
-    temperature
+    sign * temperature
 }
