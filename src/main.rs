@@ -14,8 +14,6 @@ struct WeatherDetails {
     sum: i32,
 }
 
-const FILE_PATH: &str = "";
-
 fn next_end(file: &mut File, seek_position: u64, buffer: &mut [u8]) -> std::io::Result<u64> {
     file.seek(SeekFrom::Start(seek_position))?;
     file.read_exact(buffer)?;
@@ -23,9 +21,9 @@ fn next_end(file: &mut File, seek_position: u64, buffer: &mut [u8]) -> std::io::
     Ok(seek_position + u64::try_from(pos).unwrap())
 }
 
-fn chunk_sizes(file_name: &str, chunk_count: u64) -> std::io::Result<Vec<(u64, u64)>> {
+fn chunk_sizes(file_path: &str, chunk_count: u64) -> std::io::Result<Vec<(u64, u64)>> {
     let mut result = Vec::new();
-    let mut file = File::open(file_name)?;
+    let mut file = File::open(file_path)?;
     let file_size = file.metadata()?.len();
     let chunk_size: u64 = file_size / chunk_count;
     let mut buffer = vec![0; 128];
@@ -44,35 +42,35 @@ fn chunk_sizes(file_name: &str, chunk_count: u64) -> std::io::Result<Vec<(u64, u
 fn main() {
     let start_time = Instant::now();
 
-    let chunk_count: u64 = 8;
+    // get file path from command line arguments
+    let file_path = std::env::args().nth(1).expect("File path not provided");
 
-    let weather_data: HashMap<&[u8], WeatherDetails>;
+    let chunk_count: u64 = 16;
 
-    let chunk_regions = chunk_sizes(FILE_PATH, chunk_count).unwrap();
+    let mut weather_data: HashMap<&[u8], WeatherDetails> = HashMap::new();
+
+    let chunk_regions = chunk_sizes(&file_path, chunk_count).unwrap();
 
     let mmap = unsafe {
         MmapOptions::new()
-            .map(&File::open(FILE_PATH).unwrap())
+            .map(&File::open(&file_path).unwrap())
             .unwrap()
     };
 
-    weather_data = chunk_regions
+    let map_res: Vec<_> = chunk_regions
         .into_par_iter()
         .map(|(start, end)| {
             process_batch_mmap(
                 &mmap[usize::try_from(start).unwrap()..usize::try_from(end).unwrap()],
             )
-        })
-        .reduce(
-            || HashMap::new(),
-            |mut acc, map| {
-                acc.extend(map);
-                acc
-            },
-        );
+        }).collect();
 
+    for map in map_res.into_iter() {
+        weather_data.extend(map);
+    }
+    
     // sort weather data by city name
-    let mut weather_data: Vec<_> = weather_data.iter().collect();
+    let mut weather_data: Vec<_> = weather_data.into_iter().collect();
     weather_data.sort_by(|a, b| a.0.cmp(b.0));
 
     // print the weather details
